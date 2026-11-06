@@ -1,0 +1,103 @@
+name: Derle
+# Gizli bir depoyu derler. Bu depoda kaynak kod yoktur. Kod salt okunur bir anahtarla (VICDAN_REPO_TOKEN)
+# çalışma sırasında çekilir; derleme kayıtları ve çıktılar yalnızca aşağıdaki açık anahtarın sahibinin
+# çözebileceği şekilde şifrelenerek saklanır. Kayıtlara kod, dosya adı veya derleme çıktısı yazılmaz.
+# Yalnızca depoya yazma yetkisi olanlar elle başlatabilir; dışarıdan gelen pull request'ler çalıştıramaz.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Dal
+        required: true
+        default: main
+      mode:
+        description: build veya device
+        required: true
+        default: build
+permissions:
+  contents: read
+concurrency:
+  group: derle
+  cancel-in-progress: false
+jobs:
+  derle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      OUT: ${{ github.workspace }}/out
+      PUBKEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEArJdGtysQMaFnHQJecTMl
+        9U7fodPjwxj+a8XqWU2XIqw0E5lWeNh8AHpWcPhSj8fK4U0iAkyycySb5PcFli26
+        Pp79AFdfAeYiv+GNxeUoEDCfDVUjfghD/baZ+OFr0Y3l1H5X8KlOcydAGvI6Ayzc
+        /xI3ZkuuG3BFPe/Go09PltaTvr6GVCkG2qbaPOsN+DLdSGYkiHwoPxHcApzRrAqN
+        dVPHHlVWzfqix9umAAq1NaiuAS0SF/Pd0W3n3JFWZ8xTyMt+4O7RO1TOLz7GZQ2c
+        Z3aBF+i34kCvkcMDyK7J0fhxSyfM6HAHddhbQmbNdIqpGVAQXPEb8ec7RdUjf8S8
+        ZQnt2pi8TaKK3Rad7ujkioX2PbOPAIAc7B92UKpe4hJLXJiFIdmDfC6uzbh8fQI6
+        LnLQplBh3LP1GSvRFsda6JOA56h6a6lBEW4ivRDMQaOM3HkycBr0kBRgvbfYEwME
+        yAn+lnmihCWq9y00yWSWJV0RYDtQ4p75Wx7A4iJY7oZ99QOs+sEI70nrI0P+HSYg
+        C0BuTTFls5QmOHRwT8cIF/nKCInXL9bUqu9AXyLsEhK6qPmjhT49C+NwbvZny3pf
+        e4lAaObwgDIRvzDmP37EH/iisI9AzIZAjC89eOrqrTaKy4x1f2WbjFl7GrgaFtPe
+        DB1jcEa57IsQ65+cdMPgFBsCAwEAAQ==
+        -----END PUBLIC KEY-----
+    steps:
+      - name: Kodu çek (sessiz)
+        env:
+          TOKEN: ${{ secrets.VICDAN_REPO_TOKEN }}
+          REF: ${{ inputs.ref }}
+        run: |
+          mkdir -p "$OUT"
+          [[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || { echo "geçersiz dal"; exit 1; }
+          # Anahtar tek bir depoya bağlıdır; depo adı bu dosyada ve kayıtlarda geçmez.
+          repo=$(curl -fsS -H "Authorization: Bearer $TOKEN" "https://api.github.com/user/repos?per_page=10&visibility=private" \
+                 | python3 -c 'import json,sys;r=[x["full_name"] for x in json.load(sys.stdin)];print(r[0] if len(r)==1 else "")')
+          [ -n "$repo" ] || { echo "anahtar tam olarak bir gizli depoya bağlı olmalı"; exit 1; }
+          git clone -q --depth 1 -b "$REF" "https://x-access-token:${TOKEN}@github.com/${repo}.git" src > /dev/null 2>&1 \
+            || { echo "kod çekilemedi"; exit 1; }
+          git -C src remote remove origin
+          git -C src log -1 --format=%H > "$OUT/commit.txt"
+          echo "kod hazır"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - name: Derle (çıktı şifreli pakette)
+        run: |
+          set +e
+          cd src
+          if [ -f ci/derleme.sh ]; then bash ci/derleme.sh "$OUT" > "$OUT/derleme.log" 2>&1; else
+            gradle --no-daemon lintDebug testDebugUnitTest assembleDebug > "$OUT/derleme.log" 2>&1; fi
+          echo $? > "$OUT/derleme.status"
+          echo "derleme bitti"
+      - name: Cihaz testleri (çıktı şifreli pakette)
+        if: inputs.mode == 'device'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -memory 3072 -cores 2
+          script: bash src/ci/derleme-cihaz.sh "$OUT" > "$OUT/cihaz.log" 2>&1; echo $? > "$OUT/cihaz.status"; echo "cihaz testleri bitti"
+      - name: Şifrele
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          printf '%s\n' "$PUBKEY" > pub.pem
+          tar -czf sonuc.tgz -C "$OUT" . 2>/dev/null
+          openssl rand -out k.bin 32
+          openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -in k.bin -out sonuc.key.enc
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:k.bin -in sonuc.tgz -out sonuc.tgz.enc
+          rm -rf k.bin sonuc.tgz "$OUT" src
+          mkdir paket && mv sonuc.key.enc sonuc.tgz.enc paket/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sonuc
+          path: paket/
+          retention-days: 7
