@@ -15,7 +15,7 @@ on:
         required: true
         default: build
 permissions:
-  contents: read
+  contents: write   # yalnızca şifreli sonucu 'sonuc' dalına yazmak için
 concurrency:
   group: derle
   cancel-in-progress: false
@@ -97,10 +97,13 @@ jobs:
           openssl pkeyutl -encrypt -pubin -inkey pub.pem -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -in k.bin -out sonuc.key.enc
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:k.bin -in sonuc.tgz -out sonuc.tgz.enc
           rm -rf k.bin sonuc.tgz "$OUT" src
-          mkdir paket && mv sonuc.key.enc sonuc.tgz.enc paket/
-      - uses: actions/upload-artifact@v4
+          mkdir paket && mv sonuc.key.enc sonuc.tgz.enc paket/ && echo "${{ github.run_number }}" > paket/run.txt
+      - name: Şifreli sonucu 'sonuc' dalına yaz
         if: always()
-        with:
-          name: sonuc
-          path: paket/
-          retention-days: 7
+        run: |
+          cd paket
+          git init -q -b sonuc
+          git -c user.name=derleme -c user.email=derleme@users.noreply.github.com add -A
+          git -c user.name=derleme -c user.email=derleme@users.noreply.github.com commit -q -m "sonuc ${{ github.run_number }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" sonuc:sonuc
+          echo "sonuc yazildi: ${{ github.run_number }}"
