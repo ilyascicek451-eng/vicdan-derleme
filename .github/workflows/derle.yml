@@ -48,10 +48,13 @@ jobs:
         run: |
           mkdir -p "$OUT"
           [[ "$REF" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || { echo "geçersiz dal"; exit 1; }
-          # Anahtar tek bir depoya bağlıdır; depo adı bu dosyada ve kayıtlarda geçmez.
-          repo=$(curl -fsS -H "Authorization: Bearer $TOKEN" "https://api.github.com/user/repos?per_page=10&visibility=private" \
-                 | python3 -c 'import json,sys;r=[x["full_name"] for x in json.load(sys.stdin)];print(r[0] if len(r)==1 else "")')
-          [ -n "$repo" ] || { echo "anahtar tam olarak bir gizli depoya bağlı olmalı"; exit 1; }
+          # Depo adı burada açık yazılmaz; anahtarın erişebildiği depolar arasından adının SHA-256 özetiyle seçilir.
+          repo=$(curl -fsS -H "Authorization: Bearer $TOKEN" "https://api.github.com/user/repos?per_page=100&affiliation=owner" \
+                 | python3 -c 'import hashlib,json,sys
+          r=json.load(sys.stdin); print("gorulen depo:", len(r), file=sys.stderr)
+          m=[x["full_name"] for x in r if hashlib.sha256(x["full_name"].lower().encode()).hexdigest()=="0721f9c29e3ffc574e8d443b86cf37974ae73b31b06472feb911f207ce06a9dc"]
+          print(m[0] if m else "")')
+          [ -n "$repo" ] || { echo "anahtar hedef depoya erişemiyor"; exit 1; }
           git clone -q --depth 1 -b "$REF" "https://x-access-token:${TOKEN}@github.com/${repo}.git" src > /dev/null 2>&1 \
             || { echo "kod çekilemedi"; exit 1; }
           git -C src remote remove origin
