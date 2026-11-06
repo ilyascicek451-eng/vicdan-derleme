@@ -11,7 +11,7 @@ on:
         required: true
         default: main
       mode:
-        description: build veya device
+        description: build, device veya release
         required: true
         default: build
 permissions:
@@ -69,6 +69,11 @@ jobs:
           gradle-version: '8.11.1'
           cache-disabled: true
       - name: Derle (çıktı şifreli pakette)
+        env:
+          MODE: ${{ inputs.mode }}
+          VICDAN_UPLOAD_BUNDLE: ${{ inputs.mode == 'release' && secrets.VICDAN_UPLOAD_BUNDLE || '' }}
+          VICDAN_PRIVACY_POLICY_URL: ${{ vars.VICDAN_PRIVACY_POLICY_URL }}
+          VICDAN_SUPPORT_EMAIL: ${{ vars.VICDAN_SUPPORT_EMAIL }}
         run: |
           set +e
           cd src
